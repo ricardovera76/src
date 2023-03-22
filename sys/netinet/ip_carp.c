@@ -333,6 +333,7 @@ static void	carp_demote_adj(int, char *);
 static LIST_HEAD(, carp_softc) carp_list;
 static struct mtx carp_mtx;
 static struct sx carp_sx;
+TASKQUEUE_DEFINE_THREAD(carp);
 static struct task carp_sendall_task =
     TASK_INITIALIZER(0, carp_send_ad_all, NULL);
 
@@ -2111,7 +2112,7 @@ carp_demote_adj(int adj, char *reason)
 {
 	atomic_add_int(&V_carp_demotion, adj);
 	CARP_LOG("demoted by %d to %d (%s)\n", adj, V_carp_demotion, reason);
-	taskqueue_enqueue(taskqueue_swi, &carp_sendall_task);
+	taskqueue_enqueue(taskqueue_carp, &carp_sendall_task);
 }
 
 static int
@@ -2233,7 +2234,7 @@ carp_mod_cleanup(void)
 	carp_demote_adj_p = NULL;
 	carp_master_p = NULL;
 	mtx_unlock(&carp_mtx);
-	taskqueue_drain(taskqueue_swi, &carp_sendall_task);
+	taskqueue_drain(taskqueue_carp, &carp_sendall_task);
 	mtx_destroy(&carp_mtx);
 	sx_destroy(&carp_sx);
 }
