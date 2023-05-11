@@ -1532,6 +1532,17 @@ axgbe_if_attach_post(if_ctx_t ctx)
 
 	axgbe_pci_init(pdata);
 
+	hw_if->init(pdata);
+
+        ret = phy_if->phy_start(pdata);
+        if (ret) {
+		axgbe_error("%s:  phy start %d\n", __func__, ret);
+		ret = hw_if->exit(pdata);
+		if (ret)
+			axgbe_error("%s: exit error %d\n", __func__, ret);
+		return (ret);
+	}
+
 	return (0);
 } /* axgbe_if_attach_post */
 
@@ -1589,10 +1600,17 @@ axgbe_if_detach(if_ctx_t ctx)
 	struct axgbe_if_softc	*sc = iflib_get_softc(ctx);
 	struct xgbe_prv_data	*pdata = &sc->pdata;
         struct xgbe_phy_if	*phy_if = &pdata->phy_if;
+	struct xgbe_hw_if       *hw_if = &pdata->hw_if;
         struct resource *mac_res[2];
 
 	mac_res[0] = pdata->xgmac_res;
 	mac_res[1] = pdata->xpcs_res;
+
+	phy_if->phy_stop(pdata);
+
+	int ret = hw_if->exit(pdata);
+	if (ret)
+		axgbe_error("%s: exit error %d\n", __func__, ret);
 
 	phy_if->phy_exit(pdata);
 
@@ -1616,23 +1634,10 @@ axgbe_if_detach(if_ctx_t ctx)
 static void
 axgbe_pci_init(struct xgbe_prv_data *pdata)
 {
-	struct xgbe_phy_if	*phy_if = &pdata->phy_if;
 	struct xgbe_hw_if       *hw_if = &pdata->hw_if;
-	int ret = 0;
 
 	if (!__predict_false((test_bit(XGBE_DOWN, &pdata->dev_state)))) {
 		axgbe_printf(1, "%s: Starting when XGBE_UP\n", __func__);
-		return;
-	}
-
-	hw_if->init(pdata);
-
-        ret = phy_if->phy_start(pdata);
-        if (ret) {
-		axgbe_error("%s:  phy start %d\n", __func__, ret);
-		ret = hw_if->exit(pdata);
-		if (ret)
-			axgbe_error("%s: exit error %d\n", __func__, ret);
 		return;
 	}
 
@@ -1665,9 +1670,7 @@ axgbe_pci_stop(if_ctx_t ctx)
 {
 	struct axgbe_if_softc   *sc = iflib_get_softc(ctx);
         struct xgbe_prv_data    *pdata = &sc->pdata;
-	struct xgbe_phy_if	*phy_if = &pdata->phy_if;
 	struct xgbe_hw_if       *hw_if = &pdata->hw_if;
-	int ret;
 
 	if (__predict_false(test_bit(XGBE_DOWN, &pdata->dev_state))) {
 		axgbe_printf(1, "%s: Stopping when XGBE_DOWN\n", __func__);
@@ -1679,12 +1682,6 @@ axgbe_pci_stop(if_ctx_t ctx)
 
 	hw_if->disable_tx(pdata);
 	hw_if->disable_rx(pdata);
-
-	phy_if->phy_stop(pdata);
-
-	ret = hw_if->exit(pdata);
-	if (ret)
-		axgbe_error("%s: exit error %d\n", __func__, ret);
 
 	set_bit(XGBE_DOWN, &pdata->dev_state);
 }
