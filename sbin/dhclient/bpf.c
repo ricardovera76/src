@@ -376,7 +376,19 @@ send_packet_priv(struct interface_info *interface, struct imsg_hdr *hdr, int fd)
 	if (to.s_addr == INADDR_BROADCAST)
 		result = writev(interface->wfdesc, iov, 2);
 	else {
-		struct sockaddr_in sato;
+		struct sockaddr_in safrom, sato;
+
+		safrom.sin_addr = from;
+		safrom.sin_port = 0;
+		safrom.sin_family = AF_INET;
+		safrom.sin_len = sizeof(safrom);
+
+		if (bind(interface->ufdesc, (struct sockaddr *)&safrom,
+		    sizeof(safrom)) == -1) {
+			warning("bind(): %m");
+		} else {
+			warning("bind(): bound to interface IP");
+		}
 
 		sato.sin_addr = to;
 		sato.sin_port = htons(REMOTE_PORT);
