@@ -586,8 +586,8 @@ static void
 xgbe_sfp_toggle_led(struct xgbe_prv_data *pdata, enum xgbe_led_mode mode)
 {
 	struct xgbe_phy_data *phy_data = pdata->phy_data;
-	uint8_t state[] = {0};
 	unsigned int port_id = phy_data->port_id;
+	uint8_t state = 0;
 	int ret = 0;
 
 	if (!phy_data->led_avail)
@@ -598,7 +598,7 @@ xgbe_sfp_toggle_led(struct xgbe_prv_data *pdata, enum xgbe_led_mode mode)
 		return;
 
 	ret = xgbe_phy_i2c_read_single(pdata, XGBE_IO_ADDRESS_PCF8574A,
-				       state, sizeof(state));
+				       &state, sizeof(state));
 	if (ret == -ENOTCONN)
 		phy_data->led_avail = 0;
 
@@ -607,22 +607,22 @@ xgbe_sfp_toggle_led(struct xgbe_prv_data *pdata, enum xgbe_led_mode mode)
 
 	switch (mode) {
 	case XGBE_SFP_LED_OFF:
-		state[0] |= (BIT(port_id) | (BIT(port_id) << 4));
+		state |= (BIT(port_id) | (BIT(port_id) << 4));
 		break;
 	case XGBE_SFP_LED_HI:
 		/* turn off low speed LED first */
-		state[0] |= (1 << (port_id + 4));
-		state[0] &= ~(1 << port_id);
+		state |= (1 << (port_id + 4));
+		state &= ~(1 << port_id);
 		break;
 	case XGBE_SFP_LED_LOW:
 		/* turn off high speed LED first */
-		state[0] |= (1 << port_id);
-		state[0] &= ~(1 << (port_id + 4));
+		state |= (1 << port_id);
+		state &= ~(1 << (port_id + 4));
 		break;
 	}
 
 	xgbe_phy_i2c_write(pdata, XGBE_IO_ADDRESS_PCF8574A,
-			   state, sizeof(state));
+			   &state, sizeof(state));
 
 put:
 	xgbe_phy_put_comm_ownership(pdata);
