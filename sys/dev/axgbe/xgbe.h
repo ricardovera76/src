@@ -121,6 +121,7 @@
 #include <sys/bus.h>
 #include <sys/socket.h>
 #include <sys/bitstring.h>
+#include <sys/cpuset.h>
 
 #include <net/if.h>
 #include <net/if_media.h>
@@ -129,6 +130,11 @@
 #include <dev/mii/miivar.h>
 
 #include "xgbe_osdep.h"
+
+/* Link states */
+#define XGBE_LINK_DOWN		0
+#define XGBE_LINK_UP		1
+#define XGBE_LINK_UNKNOWN	2
 
 /* From linux/dcbnl.h */
 #define IEEE_8021QAZ_MAX_TCS	8
@@ -1110,6 +1116,7 @@ struct xgbe_prv_data {
 	struct task service_work;
 	struct callout service_timer;
 	struct mtx timer_mutex;
+	cpuset_t service_cpuset;
 
 	/* Rings for Tx/Rx on a DMA channel */
 	struct xgbe_channel *channel[XGBE_MAX_DMA_CHANNELS];

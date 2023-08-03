@@ -42,6 +42,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/socket.h>
 #include <sys/sysctl.h>
 #include <sys/systm.h>
+#include <sys/smp.h>
 
 #include <net/if.h>
 #include <net/if_media.h>
@@ -405,6 +406,7 @@ axgbe_if_attach_pre(if_ctx_t ctx)
 	device_t		rdev;
 	unsigned int		ma_lo, ma_hi;
 	unsigned int		reg;
+	unsigned int		i = mp_maxid;
 	int			ret;
 
 	sc = iflib_get_softc(ctx);
@@ -554,6 +556,14 @@ axgbe_if_attach_pre(if_ctx_t ctx)
 		goto release_bus_resource;
         }
 
+	/* grab last available cpu */
+	while (i > 0 && CPU_ABSENT(i))
+		i--;
+
+	CPU_SETOF(i, &pdata->service_cpuset);
+
+	axgbe_printf(0, "dev task will run on CPU %d\n", i);
+
 	TASK_INIT(&pdata->service_work, 0, xgbe_service, pdata);
 
 	/* create the workqueue */
@@ -564,8 +574,8 @@ axgbe_if_attach_pre(if_ctx_t ctx)
 		ret = ENOMEM;
 		goto free_channels;
 	}
-	ret = taskqueue_start_threads(&pdata->dev_workqueue, 1, PI_NET,
-	    "axgbe dev taskq");
+	ret = taskqueue_start_threads_cpuset(&pdata->dev_workqueue, 1, PI_NET,
+	    &pdata->service_cpuset, "axgbe dev taskq");
 	if (ret) {
 		axgbe_error("Unable to start taskqueue\n");
 		ret = ENOMEM;
@@ -855,7 +865,8 @@ xgbe_service(void *ctx, int pending)
 
         pdata->phy_if.phy_status(pdata);
 
-	if (prev_state != pdata->phy.link) {
+	if (prev_state != pdata->phy.link &&
+		pdata->phy.link != XGBE_LINK_UNKNOWN) {
 		pdata->phy_link = pdata->phy.link;
 		axgbe_if_update_admin_status(sc->ctx);
 	}
