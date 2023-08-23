@@ -6915,13 +6915,19 @@ done:
 	}
 
 	if (log) {
-		struct pf_krule *lr;
+		struct pf_krule dr, *lr;
 
 		if (s != NULL && s->nat_rule.ptr != NULL &&
 		    s->nat_rule.ptr->log & PF_LOG_ALL)
 			lr = s->nat_rule.ptr;
 		else
 			lr = r;
+		if (lr == &V_pf_default_rule &&
+		    action != V_pf_default_rule.action) {
+			dr = V_pf_default_rule;
+			dr.action = action;
+			lr = &dr;
+		}
 		PFLOG_PACKET(kif, m, AF_INET, dir, reason, lr, a, ruleset, &pd,
 		    (s == NULL));
 	}
@@ -7333,13 +7339,19 @@ done:
 		printf("pf: divert(9) is not supported for IPv6\n");
 
 	if (log) {
-		struct pf_krule *lr;
+		struct pf_krule dr, *lr;
 
 		if (s != NULL && s->nat_rule.ptr != NULL &&
 		    s->nat_rule.ptr->log & PF_LOG_ALL)
 			lr = s->nat_rule.ptr;
 		else
 			lr = r;
+		if (lr == &V_pf_default_rule &&
+		    action != V_pf_default_rule.action) {
+			dr = V_pf_default_rule;
+			dr.action = action;
+			lr = &dr;
+		}
 		PFLOG_PACKET(kif, m, AF_INET6, dir, reason, lr, a, ruleset,
 		    &pd, (s == NULL));
 	}
