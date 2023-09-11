@@ -121,7 +121,6 @@
 #include <sys/bus.h>
 #include <sys/socket.h>
 #include <sys/bitstring.h>
-#include <sys/cpuset.h>
 
 #include <net/if.h>
 #include <net/if_media.h>
@@ -1126,7 +1125,6 @@ struct xgbe_prv_data {
 	struct task service_work;
 	struct callout service_timer;
 	struct mtx timer_mutex;
-	cpuset_t service_cpuset;
 
 	/* Rings for Tx/Rx on a DMA channel */
 	struct xgbe_channel *channel[XGBE_MAX_DMA_CHANNELS];
