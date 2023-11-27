@@ -701,7 +701,6 @@ ath_beacon_generate(struct ath_softc *sc, struct ieee80211vap *vap)
 	struct ath_vap *avp = ATH_VAP(vap);
 	struct ath_txq *cabq = sc->sc_cabq;
 	struct ath_buf *bf;
-	struct mbuf *m;
 	int nmcastq, error;
 
 	KASSERT(vap->iv_state >= IEEE80211_S_RUN,
@@ -715,16 +714,22 @@ ath_beacon_generate(struct ath_softc *sc, struct ieee80211vap *vap)
 	 * of the TIM bitmap).
 	 */
 	bf = avp->av_bcbuf;
-	m = bf->bf_m;
+
+	if (bf->bf_m == NULL) {
+		bf->bf_m = ieee80211_beacon_alloc(bf->bf_node);
+		if (bf->bf_m == NULL) {
+			return NULL;
+		}
+	}
+
 	/* XXX lock mcastq? */
 	nmcastq = avp->av_mcastq.axq_depth;
 
-	if (ieee80211_beacon_update(bf->bf_node, m, nmcastq)) {
+	if (ieee80211_beacon_update(bf->bf_node, bf->bf_m, nmcastq)) {
 		/* XXX too conservative? */
 		bus_dmamap_unload(sc->sc_dmat, bf->bf_dmamap);
-		error = bus_dmamap_load_mbuf_sg(sc->sc_dmat, bf->bf_dmamap, m,
-					     bf->bf_segs, &bf->bf_nseg,
-					     BUS_DMA_NOWAIT);
+		error = bus_dmamap_load_mbuf_sg(sc->sc_dmat, bf->bf_dmamap,
+		    bf->bf_m, bf->bf_segs, &bf->bf_nseg, BUS_DMA_NOWAIT);
 		if (error != 0) {
 			if_printf(vap->iv_ifp,
 			    "%s: bus_dmamap_load_mbuf_sg failed, error %u\n",
@@ -827,7 +832,6 @@ ath_beacon_start_adhoc(struct ath_softc *sc, struct ieee80211vap *vap)
 	struct ath_vap *avp = ATH_VAP(vap);
 	struct ath_hal *ah = sc->sc_ah;
 	struct ath_buf *bf;
-	struct mbuf *m;
 	int error;
 
 	KASSERT(avp->av_bcbuf != NULL, ("no beacon buffer"));
@@ -839,13 +843,19 @@ ath_beacon_start_adhoc(struct ath_softc *sc, struct ieee80211vap *vap)
 	 * of the TIM bitmap).
 	 */
 	bf = avp->av_bcbuf;
-	m = bf->bf_m;
-	if (ieee80211_beacon_update(bf->bf_node, m, 0)) {
+
+	if (bf->bf_m == NULL) {
+		bf->bf_m = ieee80211_beacon_alloc(bf->bf_node);
+		if (bf->bf_m == NULL) {
+			return;
+		}
+	}
+
+	if (ieee80211_beacon_update(bf->bf_node, bf->bf_m, 0)) {
 		/* XXX too conservative? */
 		bus_dmamap_unload(sc->sc_dmat, bf->bf_dmamap);
-		error = bus_dmamap_load_mbuf_sg(sc->sc_dmat, bf->bf_dmamap, m,
-					     bf->bf_segs, &bf->bf_nseg,
-					     BUS_DMA_NOWAIT);
+		error = bus_dmamap_load_mbuf_sg(sc->sc_dmat, bf->bf_dmamap,
+		    bf->bf_m, bf->bf_segs, &bf->bf_nseg, BUS_DMA_NOWAIT);
 		if (error != 0) {
 			if_printf(vap->iv_ifp,
 			    "%s: bus_dmamap_load_mbuf_sg failed, error %u\n",
