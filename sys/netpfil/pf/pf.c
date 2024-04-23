@@ -6621,19 +6621,16 @@ pf_routable(struct pf_addr *addr, sa_family_t af, struct pfi_kkif *kif,
 
 #ifdef INET
 static void
-pf_route(struct mbuf **m, struct pf_krule *r, int dir, struct ifnet *oifp,
+pf_route(struct mbuf **m, struct pf_krule *r, int dir, struct ifnet *ifp,
     struct pf_kstate *s, struct pf_pdesc *pd, struct inpcb *inp)
 {
-	struct mbuf		*m0, *m1;
+	struct mbuf		*m0;
 	struct sockaddr_in	dst;
 	struct ip		*ip;
-	struct ifnet		*ifp = NULL;
 	struct pf_addr		 naddr;
 	struct pf_ksrc_node	*sn = NULL;
-	int			 error = 0;
-	uint16_t		 ip_len, ip_off;
 
-	KASSERT(m && *m && r && oifp, ("%s: invalid parameters", __func__));
+	KASSERT(m && *m && r && ifp, ("%s: invalid parameters", __func__));
 	KASSERT(dir == PF_IN || dir == PF_OUT, ("%s: invalid direction",
 	    __func__));
 
@@ -6646,33 +6643,10 @@ pf_route(struct mbuf **m, struct pf_krule *r, int dir, struct ifnet *oifp,
 	}
 
 	if (r->rt == PF_DUPTO) {
-		if ((pd->pf_mtag->flags & PF_DUPLICATED)) {
-			if (s == NULL) {
-				ifp = r->rpool.cur->kif ?
-				    r->rpool.cur->kif->pfik_ifp : NULL;
-			} else {
-				ifp = s->rt_kif ? s->rt_kif->pfik_ifp : NULL;
-				/* If pfsync'd */
-				if (ifp == NULL)
-					ifp = r->rpool.cur->kif ?
-					    r->rpool.cur->kif->pfik_ifp : NULL;
+		if ((m0 = m_dup(*m, M_NOWAIT)) == NULL) {
+			if (s)
 				PF_STATE_UNLOCK(s);
-			}
-			if (ifp == oifp) {
-				/* When the 2nd interface is not skipped */
-				return;
-			} else {
-				m0 = *m;
-				*m = NULL;
-				goto bad;
-			}
-		} else {
-			pd->pf_mtag->flags |= PF_DUPLICATED;
-			if (((m0 = m_dup(*m, M_NOWAIT)) == NULL)) {
-				if (s)
-					PF_STATE_UNLOCK(s);
-				return;
-			}
+			return;
 		}
 	} else {
 		if ((r->rt == PF_REPLYTO) == (r->direction == dir)) {
@@ -6681,6 +6655,13 @@ pf_route(struct mbuf **m, struct pf_krule *r, int dir, struct ifnet *oifp,
 			return;
 		}
 		m0 = *m;
+	}
+
+	/* retain old behaviour by avoiding a rewrite */
+	if (IP_HAS_NEXTHOP(m0)) {
+		if (s)
+			PF_STATE_UNLOCK(s);
+		return;
 	}
 
 	ip = mtod(m0, struct ip *);
@@ -6717,89 +6698,13 @@ pf_route(struct mbuf **m, struct pf_krule *r, int dir, struct ifnet *oifp,
 	if (ifp == NULL)
 		goto bad;
 
-	if (dir == PF_IN) {
-		if (pf_test(PF_OUT, 0, ifp, &m0, inp) != PF_PASS)
-			goto bad;
-		else if (m0 == NULL)
-			goto done;
-		if (m0->m_len < sizeof(struct ip)) {
-			DPFPRINTF(PF_DEBUG_URGENT,
-			    ("%s: m0->m_len < sizeof(struct ip)\n", __func__));
-			goto bad;
-		}
-		ip = mtod(m0, struct ip *);
-	}
-
-	if (ifp->if_flags & IFF_LOOPBACK)
-		m0->m_flags |= M_SKIP_FIREWALL;
-
-	ip_len = ntohs(ip->ip_len);
-	ip_off = ntohs(ip->ip_off);
-
-	/* Copied from FreeBSD 10.0-CURRENT ip_output. */
-	m0->m_pkthdr.csum_flags |= CSUM_IP;
-	if (m0->m_pkthdr.csum_flags & CSUM_DELAY_DATA & ~ifp->if_hwassist) {
-		in_delayed_cksum(m0);
-		m0->m_pkthdr.csum_flags &= ~CSUM_DELAY_DATA;
-	}
-	if (m0->m_pkthdr.csum_flags & CSUM_SCTP & ~ifp->if_hwassist) {
-		pf_sctp_checksum(m0, (uint32_t)(ip->ip_hl << 2));
-		m0->m_pkthdr.csum_flags &= ~CSUM_SCTP;
-	}
-
-	/*
-	 * If small enough for interface, or the interface will take
-	 * care of the fragmentation for us, we can just send directly.
-	 */
-	if (ip_len <= ifp->if_mtu ||
-	    (m0->m_pkthdr.csum_flags & ifp->if_hwassist & CSUM_TSO) != 0) {
-		ip->ip_sum = 0;
-		if (m0->m_pkthdr.csum_flags & CSUM_IP & ~ifp->if_hwassist) {
-			ip->ip_sum = in_cksum(m0, ip->ip_hl << 2);
-			m0->m_pkthdr.csum_flags &= ~CSUM_IP;
-		}
-		m_clrprotoflags(m0);	/* Avoid confusing lower layers. */
-		error = (*ifp->if_output)(ifp, m0, sintosa(&dst), NULL);
-		goto done;
-	}
-
-	/* Balk when DF bit is set or the interface didn't support TSO. */
-	if ((ip_off & IP_DF) || (m0->m_pkthdr.csum_flags & CSUM_TSO)) {
-		error = EMSGSIZE;
-		KMOD_IPSTAT_INC(ips_cantfrag);
-		if (r->rt != PF_DUPTO) {
-			if (s && pd->nat_rule != NULL)
-				PACKET_UNDO_NAT(m0, pd,
-				    (ip->ip_hl << 2) + (ip_off & IP_OFFMASK),
-				    s, dir);
-
-			icmp_error(m0, ICMP_UNREACH, ICMP_UNREACH_NEEDFRAG, 0,
-			    ifp->if_mtu);
-			goto done;
-		} else
-			goto bad;
-	}
-
-	error = ip_fragment(ip, &m0, ifp->if_mtu, ifp->if_hwassist);
-	if (error)
+	if (ip_set_fwdtag(m0, &dst, ifp))
 		goto bad;
 
-	for (; m0; m0 = m1) {
-		m1 = m0->m_nextpkt;
-		m0->m_nextpkt = NULL;
-		if (error == 0) {
-			m_clrprotoflags(m0);
-			error = (*ifp->if_output)(ifp, m0, sintosa(&dst), NULL);
-		} else
-			m_freem(m0);
+	if (r->rt == PF_DUPTO) {
+		ip_forward(m0, 1);
 	}
 
-	if (error == 0)
-		KMOD_IPSTAT_INC(ips_fragmented);
-
-done:
-	if (r->rt != PF_DUPTO)
-		*m = NULL;
 	return;
 
 bad_locked:
@@ -6807,7 +6712,8 @@ bad_locked:
 		PF_STATE_UNLOCK(s);
 bad:
 	m_freem(m0);
-	goto done;
+	if (r->rt != PF_DUPTO)
+		*m = NULL;
 }
 
 static void
@@ -6910,17 +6816,16 @@ bad:
 
 #ifdef INET6
 static void
-pf_route6(struct mbuf **m, struct pf_krule *r, int dir, struct ifnet *oifp,
+pf_route6(struct mbuf **m, struct pf_krule *r, int dir, struct ifnet *ifp,
     struct pf_kstate *s, struct pf_pdesc *pd, struct inpcb *inp)
 {
 	struct mbuf		*m0;
 	struct sockaddr_in6	dst;
 	struct ip6_hdr		*ip6;
-	struct ifnet		*ifp = NULL;
 	struct pf_addr		 naddr;
 	struct pf_ksrc_node	*sn = NULL;
 
-	KASSERT(m && *m && r && oifp, ("%s: invalid parameters", __func__));
+	KASSERT(m && *m && r && ifp, ("%s: invalid parameters", __func__));
 	KASSERT(dir == PF_IN || dir == PF_OUT, ("%s: invalid direction",
 	    __func__));
 
@@ -6933,33 +6838,10 @@ pf_route6(struct mbuf **m, struct pf_krule *r, int dir, struct ifnet *oifp,
 	}
 
 	if (r->rt == PF_DUPTO) {
-		if ((pd->pf_mtag->flags & PF_DUPLICATED)) {
-			if (s == NULL) {
-				ifp = r->rpool.cur->kif ?
-				    r->rpool.cur->kif->pfik_ifp : NULL;
-			} else {
-				ifp = s->rt_kif ? s->rt_kif->pfik_ifp : NULL;
-				/* If pfsync'd */
-				if (ifp == NULL)
-					ifp = r->rpool.cur->kif ?
-					    r->rpool.cur->kif->pfik_ifp : NULL;
+		if ((m0 = m_dup(*m, M_NOWAIT)) == NULL) {
+			if (s)
 				PF_STATE_UNLOCK(s);
-			}
-			if (ifp == oifp) {
-				/* When the 2nd interface is not skipped */
-				return;
-			} else {
-				m0 = *m;
-				*m = NULL;
-				goto bad;
-			}
-		} else {
-			pd->pf_mtag->flags |= PF_DUPLICATED;
-			if (((m0 = m_dup(*m, M_NOWAIT)) == NULL)) {
-				if (s)
-					PF_STATE_UNLOCK(s);
-				return;
-			}
+			return;
 		}
 	} else {
 		if ((r->rt == PF_REPLYTO) == (r->direction == dir)) {
@@ -6968,6 +6850,13 @@ pf_route6(struct mbuf **m, struct pf_krule *r, int dir, struct ifnet *oifp,
 			return;
 		}
 		m0 = *m;
+	}
+
+	/* retain old behaviour by avoiding a rewrite */
+	if (IP6_HAS_NEXTHOP(m0)) {
+		if (s)
+			PF_STATE_UNLOCK(s);
+		return;
 	}
 
 	ip6 = mtod(m0, struct ip6_hdr *);
@@ -6996,65 +6885,21 @@ pf_route6(struct mbuf **m, struct pf_krule *r, int dir, struct ifnet *oifp,
 			PF_ACPY((struct pf_addr *)&dst.sin6_addr,
 			    &s->rt_addr, AF_INET6);
 		ifp = s->rt_kif ? s->rt_kif->pfik_ifp : NULL;
-	}
-
-	if (s)
 		PF_STATE_UNLOCK(s);
-
+	}
 	/* If pfsync'd */
 	if (ifp == NULL)
 		ifp = r->rpool.cur->kif ? r->rpool.cur->kif->pfik_ifp : NULL;
 	if (ifp == NULL)
 		goto bad;
 
-	if (dir == PF_IN) {
-		if (pf_test6(PF_OUT, PFIL_FWD, ifp, &m0, inp) != PF_PASS)
-			goto bad;
-		else if (m0 == NULL)
-			goto done;
-		if (m0->m_len < sizeof(struct ip6_hdr)) {
-			DPFPRINTF(PF_DEBUG_URGENT,
-			    ("%s: m0->m_len < sizeof(struct ip6_hdr)\n",
-			    __func__));
-			goto bad;
-		}
-		ip6 = mtod(m0, struct ip6_hdr *);
+	if (ip6_set_fwdtag(m0, &dst, ifp))
+		goto bad;
+
+	if (r->rt == PF_DUPTO) {
+		ip6_forward(m0, 1);
 	}
 
-	if (ifp->if_flags & IFF_LOOPBACK)
-		m0->m_flags |= M_SKIP_FIREWALL;
-
-	if (m0->m_pkthdr.csum_flags & CSUM_DELAY_DATA_IPV6 &
-	    ~ifp->if_hwassist) {
-		uint32_t plen = m0->m_pkthdr.len - sizeof(*ip6);
-		in6_delayed_cksum(m0, plen, sizeof(struct ip6_hdr));
-		m0->m_pkthdr.csum_flags &= ~CSUM_DELAY_DATA_IPV6;
-	}
-
-	/*
-	 * If the packet is too large for the outgoing interface,
-	 * send back an icmp6 error.
-	 */
-	if (IN6_IS_SCOPE_EMBED(&dst.sin6_addr))
-		dst.sin6_addr.s6_addr16[1] = htons(ifp->if_index);
-	if ((u_long)m0->m_pkthdr.len <= ifp->if_mtu)
-		nd6_output_ifp(ifp, ifp, m0, &dst, NULL);
-	else {
-		in6_ifstat_inc(ifp, ifs6_in_toobig);
-		if (r->rt != PF_DUPTO) {
-			if (s && pd->nat_rule != NULL)
-				PACKET_UNDO_NAT(m0, pd,
-				    ((caddr_t)ip6 - m0->m_data) +
-				    sizeof(struct ip6_hdr), s, dir);
-
-			icmp6_error(m0, ICMP6_PACKET_TOO_BIG, 0, ifp->if_mtu);
-		} else
-			goto bad;
-	}
-
-done:
-	if (r->rt != PF_DUPTO)
-		*m = NULL;
 	return;
 
 bad_locked:
@@ -7062,7 +6907,8 @@ bad_locked:
 		PF_STATE_UNLOCK(s);
 bad:
 	m_freem(m0);
-	goto done;
+	if (r->rt != PF_DUPTO)
+		*m = NULL;
 }
 
 static void
